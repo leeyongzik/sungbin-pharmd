@@ -1,8 +1,8 @@
 import { useState, useRef, useCallback } from "react";
 
 const CLAUDE_MODEL = "claude-sonnet-4-20250514";
-const TABS = ["홈", "처방전", "내약물", "약사상담", "임산부"];
-const TAB_ICONS = ["🏠", "📸", "💊", "👨‍⚕️", "🤰"];
+const TABS = ["홈", "처방전", "내약물", "약사상담", "주의사항"];
+const TAB_ICONS = ["🏠", "📸", "💊", "👨‍⚕️", "⚠️"];
 const PHARMACY_PHONE = "031-719-0936";
 const KAKAO_CHANNEL_URL = "http://pf.kakao.com/_lxdyQn/chat";
 
@@ -505,43 +505,126 @@ function ConsultTab({ records }) {
 }
 
 // ── 임산부 약물 체크 탭 ──
-const PREGNANCY_LEVEL = {
-  danger:  { icon: "🔴", label: "복용 금지",   bg: "bg-red-50",    border: "border-red-300",    text: "text-red-700"    },
+const DRUG_WARN_LEVEL = {
+  danger:  { icon: "🔴", label: "위험·금기",   bg: "bg-red-50",    border: "border-red-300",    text: "text-red-700"    },
   caution: { icon: "🟡", label: "주의 필요",   bg: "bg-yellow-50", border: "border-yellow-300", text: "text-yellow-700" },
   safe:    { icon: "🟢", label: "비교적 안전", bg: "bg-green-50",  border: "border-green-300",  text: "text-green-700"  },
   unknown: { icon: "⚪", label: "정보 불명확", bg: "bg-gray-50",   border: "border-gray-300",   text: "text-gray-600"   },
 };
 
-function PregnancyTab() {
+// DUR TYPE_CODE → 표시 정보 (A·C = 금기, 나머지 = 주의)
+const DUR_TYPE = {
+  A: { icon: "⛔", name: "병용금기",      danger: true  },
+  B: { icon: "🚫", name: "특정연령대금기", danger: true  },
+  C: { icon: "🤰", name: "임부금기",      danger: true  },
+  D: { icon: "⚖️", name: "용량주의",      danger: false },
+  E: { icon: "⏱️", name: "투여기간주의",  danger: false },
+  F: { icon: "👴", name: "노인주의",      danger: false },
+  G: { icon: "💊", name: "효능군중복",    danger: false },
+  I: { icon: "🤱", name: "임부수유주의",  danger: false },
+};
+
+function DrugWarningTab() {
   const [query, setQuery] = useState("");
   const [phase, setPhase] = useState("idle");
   const [result, setResult] = useState(null);
   const [errMsg, setErrMsg] = useState("");
+
+  const parseDurList = (items) => {
+    const list = items ? (Array.isArray(items) ? items : [items]) : [];
+    const top = list.reduce((best, it) =>
+      (it.TYPE_CODE||"").split(",").filter(Boolean).length >
+      (best?.TYPE_CODE||"").split(",").filter(Boolean).length ? it : best
+    , null);
+    if (!top) return { typeCodes: [], durItemName: "" };
+    const typeCodes = (top.TYPE_CODE||"").split(",").map(s=>s.trim()).filter(Boolean);
+    const durItemName = top.ITEM_NAME || top.INGR_NAME || "";
+    return { typeCodes, durItemName };
+  };
 
   const search = async () => {
     const q = query.trim();
     if (!q) return;
     setPhase("loading"); setResult(null); setErrMsg("");
     try {
-      const res = await fetch(`/api/drug-info?itemName=${encodeURIComponent(q)}`);
-      if (!res.ok) throw new Error("API 응답 오류");
-      const data = await res.json();
-      const items = data?.body?.items;
-      if (!items || (Array.isArray(items) && items.length === 0)) {
+      // ── 1단계: e약은요 + DUR 품목정보 병렬 조회 ──
+      const [drugRes, dur1Res] = await Promise.all([
+        fetch(`/api/drug-info?itemName=${encodeURIComponent(q)}`),
+        fetch(`/api/dur-pregnancy?itemName=${encodeURIComponent(q)}`).catch(() => null),
+      ]);
+      const drugData = await drugRes.json();
+      const dur1Data = dur1Res ? await dur1Res.json().catch(() => null) : null;
+
+      // e약은요 파싱 (없어도 계속)
+      const drugItems = drugData?.body?.items;
+      const eItem = drugItems ? (Array.isArray(drugItems) ? drugItems[0] : drugItems) : null;
+      const atpn = eItem
+        ? [eItem.atpnWarnQesitm, eItem.atpnQesitm, eItem.intrcQesitm, eItem.seQesitm]
+            .filter(Boolean).join("\n").trim()
+        : "";
+
+      // DUR 1단계 결과 확인
+      const dur1Items = dur1Data?.body?.items;
+      const has1 = dur1Items && (!Array.isArray(dur1Items) || dur1Items.length > 0);
+      let durStep = 1;
+      let durItems = has1 ? dur1Items : null;
+
+      // ── 2단계: 품목정보 없으면 성분정보 API 검색 ──
+      if (!has1) {
+        const dur2Res = await fetch(`/api/dur-ingredient?ingdtName=${encodeURIComponent(q)}`).catch(() => null);
+        const dur2Data = dur2Res ? await dur2Res.json().catch(() => null) : null;
+        const dur2Items = dur2Data?.body?.items;
+        if (dur2Items && (!Array.isArray(dur2Items) || dur2Items.length > 0)) {
+          durItems = dur2Items;
+          durStep = 2;
+        } else {
+          durStep = 3; // ── 3단계: Claude 보완 ──
+        }
+      }
+
+      // e약은요도 없고 DUR도 없으면 에러
+      if (!eItem && durStep === 3) {
         setErrMsg("검색 결과가 없습니다. 제품명 또는 성분명으로 다시 검색해주세요.");
         setPhase("error"); return;
       }
-      const item = Array.isArray(items) ? items[0] : items;
-      const atpn = [item.atpnWarnQesitm, item.atpnQesitm].filter(Boolean).join("\n").trim();
+
+      // DUR 공통 파싱
+      const { typeCodes, durItemName } = parseDurList(durItems);
+      const DANGER_CODES = ["A","B","C"];
+      const durLevel = typeCodes.length === 0 ? null
+        : typeCodes.some(c => DANGER_CODES.includes(c)) ? "danger" : "caution";
+      const durDesc = typeCodes.length > 0
+        ? typeCodes.map(c => `${c}: ${DUR_TYPE[c]?.name || c}`).join(", ")
+        : "해당 없음";
+
+      const STEP_LABEL = { 1:"DUR 품목정보", 2:"DUR 성분정보", 3:"Claude 보완" };
+      const durSection = durItems
+        ? `[${STEP_LABEL[durStep]}]\n기준명: ${durItemName}\n주의사항: ${durDesc}`
+        : `[DUR]\n품목·성분 정보 없음 — Claude 전문 지식으로 보완`;
+
+      const fallbackNote = durStep === 3
+        ? "\nDUR 공식 데이터 없음. 약학 전문 지식으로 주요 주의사항을 최대한 분석하세요."
+        : "";
 
       const claudeText = await callClaude([{
         role: "user",
-        content: [{ type: "text", text: `아래는 "${item.itemName}"의 주의사항 원문(식약처 e약은요)입니다.\n\n${atpn || "(주의사항 없음)"}\n\n임산부·수유부·임신·태아·모유 관련 내용만 추출해 쉬운 한국어로 해설하세요.\n임신 관련 내용이 명시적으로 없으면 level을 "unknown"으로 하세요.\n\nJSON만 출력:\n{"level":"danger|caution|safe|unknown","summary":"한 줄 요약(40자 이내)","detail":"상세 해설(150자 이내)"}` }]
-      }], "한국 전문 약사 AI. 임산부 약물 안전성 전문가. JSON만 출력.");
+        content: [{ type: "text", text: `아래는 "${eItem?.itemName || q}" 의약품의 주의사항 공식 자료입니다.\n\n${durSection}\n\n[e약은요 원문]\n${atpn || "(없음)"}\n\n각 주의사항 항목별로 쉽게 설명하고 종합 복약지도를 작성하세요.${fallbackNote}\n주의사항 없으면 level="unknown".\n\nJSON만 출력:\n{"level":"danger|caution|safe|unknown","summary":"한 줄 요약(40자 이내)","warnings":[{"code":"DUR코드또는X","name":"항목명","desc":"60자 이내 설명"}],"detail":"종합 복약지도(200자 이내)"}` }]
+      }], "한국 전문 약사 AI. 의약품 DUR 주의사항 전문가. JSON만 출력.");
 
       const parsed = JSON.parse(claudeText.replace(/```json|```/g, "").trim());
-      const level = ["danger","caution","safe","unknown"].includes(parsed.level) ? parsed.level : "unknown";
-      setResult({ level, summary: parsed.summary, detail: parsed.detail, itemName: item.itemName });
+      const finalLevel = durLevel ||
+        (["danger","caution","safe","unknown"].includes(parsed.level) ? parsed.level : "unknown");
+
+      setResult({
+        level: finalLevel,
+        summary: parsed.summary,
+        warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
+        detail: parsed.detail,
+        itemName: eItem?.itemName || q,
+        typeCodes,
+        durItemName,
+        durStep,
+      });
       setPhase("done");
     } catch(e) {
       setErrMsg("오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
@@ -549,15 +632,21 @@ function PregnancyTab() {
     }
   };
 
+  const STEP_SOURCE = {
+    1: { label: "DUR 품목정보", color: "text-blue-600" },
+    2: { label: "DUR 성분정보", color: "text-indigo-600" },
+    3: { label: "Claude 보완",  color: "text-purple-600" },
+  };
+
   return (
     <div className="p-4 space-y-4">
-      <h2 className="text-lg font-bold text-gray-800">🤰 임산부 약물 체크</h2>
+      <h2 className="text-lg font-bold text-gray-800">⚠️ 약물 주의사항 조회</h2>
       <div className="bg-white rounded-2xl shadow p-4 space-y-3">
         <p className="text-sm text-gray-500">제품명 또는 성분명을 입력하세요</p>
         <div className="flex gap-2">
           <input
             className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-blue-400"
-            placeholder="예: 타이레놀, 아세트아미노펜"
+            placeholder="예: 이부프로펜, 아세트아미노펜"
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => e.key === "Enter" && search()}
@@ -565,15 +654,15 @@ function PregnancyTab() {
           <button
             onClick={search}
             disabled={phase === "loading"}
-            className="px-4 py-2 bg-pink-500 text-white text-sm font-bold rounded-xl disabled:opacity-50"
+            className="px-4 py-2 bg-indigo-600 text-white text-sm font-bold rounded-xl disabled:opacity-50"
           >검색</button>
         </div>
       </div>
 
       {phase === "loading" && (
         <div className="bg-white rounded-2xl shadow p-6 flex flex-col items-center gap-3">
-          <div className="w-8 h-8 border-4 border-pink-200 border-t-pink-500 rounded-full animate-spin"/>
-          <p className="text-sm text-gray-500">식약처 정보를 조회하고 있습니다...</p>
+          <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"/>
+          <p className="text-sm text-gray-500">DUR 및 e약은요 정보를 조회하고 있습니다...</p>
         </div>
       )}
 
@@ -584,27 +673,71 @@ function PregnancyTab() {
       )}
 
       {phase === "done" && result && (()=>{
-        const lv = PREGNANCY_LEVEL[result.level] || PREGNANCY_LEVEL.unknown;
+        const lv = DRUG_WARN_LEVEL[result.level] || DRUG_WARN_LEVEL.unknown;
+        const src = STEP_SOURCE[result.durStep] || STEP_SOURCE[3];
         return (
           <div className="space-y-3">
+            {/* 신호등 요약 카드 */}
             <div className={`rounded-2xl p-4 border ${lv.bg} ${lv.border}`}>
               <div className="flex items-center gap-3 mb-2">
                 <span className="text-3xl">{lv.icon}</span>
-                <div>
+                <div className="flex-1">
                   <p className="text-xs text-gray-500 font-medium">{result.itemName}</p>
                   <p className={`text-base font-bold ${lv.text}`}>{lv.label}</p>
                 </div>
+                <span className={`text-xs font-semibold ${src.color}`}>{src.label}</span>
               </div>
-              <p className="text-sm font-semibold text-gray-800">{result.summary}</p>
+              <p className="text-sm font-semibold text-gray-800 mb-2">{result.summary}</p>
+              {result.typeCodes.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {result.typeCodes.map(code => {
+                    const t = DUR_TYPE[code] || { icon: "⚠️", name: code, danger: false };
+                    return (
+                      <span key={code}
+                        className={`text-xs font-semibold px-2 py-0.5 rounded-full ${t.danger ? "bg-red-100 text-red-700" : "bg-yellow-100 text-yellow-700"}`}>
+                        {t.icon} {t.name}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
             </div>
+
+            {/* 항목별 상세 */}
+            {result.warnings.length > 0 && (
+              <div className="bg-white rounded-2xl shadow overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <p className="text-sm font-bold text-gray-800">📌 항목별 안내</p>
+                  {result.durItemName && (
+                    <p className="text-xs text-gray-400 mt-0.5">기준: {result.durItemName}</p>
+                  )}
+                </div>
+                {result.warnings.map((w, i) => {
+                  const t = DUR_TYPE[w.code] || { icon: "⚠️", name: w.name, danger: false };
+                  return (
+                    <div key={i} className="px-4 py-3 border-t border-gray-100 flex gap-3 items-start">
+                      <span className="text-xl mt-0.5">{t.icon}</span>
+                      <div>
+                        <p className={`text-xs font-bold ${t.danger ? "text-red-700" : "text-yellow-700"}`}>{w.name}</p>
+                        <p className="text-xs text-gray-700 mt-0.5 leading-relaxed">{w.desc}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* 종합 복약지도 */}
             <div className="bg-white rounded-2xl shadow p-4">
-              <p className="text-sm font-bold text-gray-700 mb-2">📋 상세 안내</p>
+              <p className="text-sm font-bold text-gray-700 mb-2">📋 종합 복약지도</p>
               <p className="text-sm text-gray-700 leading-relaxed">{result.detail}</p>
             </div>
+
             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 space-y-1">
-              <p className="text-xs text-amber-700 leading-relaxed">⚠️ 이 정보는 참고용입니다. 복용 전 반드시 의사·약사와 상담하세요.</p>
-              <p className="text-xs text-gray-400">출처: 식약처 의약품개요정보(e약은요)</p>
+              <p className="text-xs text-amber-700">⚠️ 이 정보는 참고용입니다. 복용 전 반드시 의사·약사와 상담하세요.</p>
+              <p className="text-xs text-gray-400">출처: 식약처 {src.label} + 의약품개요정보(e약은요)</p>
             </div>
+
             <button
               onClick={() => { setPhase("idle"); setResult(null); setQuery(""); }}
               className="w-full py-3 bg-gray-100 text-gray-700 font-bold rounded-2xl text-sm"
@@ -631,7 +764,7 @@ export default function App() {
         {tab===1&&<PrescriptionTab onSave={saveRecord}/>}
         {tab===2&&<MyDrugsTab records={records}/>}
         {tab===3&&<ConsultTab records={records}/>}
-        {tab===4&&<PregnancyTab/>}
+        {tab===4&&<DrugWarningTab/>}
       </div>
       <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-sm bg-white border-t border-gray-100 flex flex-col z-10">
         <div className="flex">
