@@ -514,14 +514,14 @@ const DRUG_WARN_LEVEL = {
 
 // DUR TYPE_CODE → 표시 정보 (A·C = 금기, 나머지 = 주의)
 const DUR_TYPE = {
-  A: { icon: "⛔", name: "병용금기",      danger: true  },
+  A: { icon: "⛔", name: "병용금기",       danger: true  },
   B: { icon: "🚫", name: "특정연령대금기", danger: true  },
-  C: { icon: "🤰", name: "임부금기",      danger: true  },
-  D: { icon: "⚖️", name: "용량주의",      danger: false },
-  E: { icon: "⏱️", name: "투여기간주의",  danger: false },
-  F: { icon: "👴", name: "노인주의",      danger: false },
-  G: { icon: "💊", name: "효능군중복",    danger: false },
-  I: { icon: "🤱", name: "임부수유주의",  danger: false },
+  C: { icon: "🤰", name: "임부금기",       danger: true  },
+  D: { icon: "⚖️", name: "용량주의",       danger: false },
+  E: { icon: "⏱️", name: "투여기간주의",   danger: false },
+  F: { icon: "👴", name: "노인주의",       danger: false },
+  G: { icon: "🤱", name: "임부수유주의",   danger: false },
+  I: { icon: "💊", name: "효능군중복주의", danger: false },
 };
 
 function DrugWarningTab() {
@@ -532,13 +532,19 @@ function DrugWarningTab() {
 
   const parseDurList = (items) => {
     const list = items ? (Array.isArray(items) ? items : [items]) : [];
+    if (list.length === 0) return { typeCodes: [], durItemName: "" };
+    // 모든 아이템의 TYPE_CODE를 합산 — 아이템마다 코드가 분산될 수 있음
+    const codeSet = new Set();
+    list.forEach(it =>
+      (it.TYPE_CODE||"").split(",").map(s=>s.trim()).filter(Boolean).forEach(c => codeSet.add(c))
+    );
+    const typeCodes = Array.from(codeSet).sort();
+    // 대표 품목명: TYPE_CODE가 가장 많은 아이템
     const top = list.reduce((best, it) =>
       (it.TYPE_CODE||"").split(",").filter(Boolean).length >
       (best?.TYPE_CODE||"").split(",").filter(Boolean).length ? it : best
-    , null);
-    if (!top) return { typeCodes: [], durItemName: "" };
-    const typeCodes = (top.TYPE_CODE||"").split(",").map(s=>s.trim()).filter(Boolean);
-    const durItemName = top.ITEM_NAME || top.INGR_NAME || "";
+    , list[0]);
+    const durItemName = top?.ITEM_NAME || top?.INGR_NAME || "";
     return { typeCodes, durItemName };
   };
 
