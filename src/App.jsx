@@ -575,9 +575,12 @@ function DrugWarningTab() {
       let durStep = 1;
       let durItems = has1 ? dur1Items : null;
 
-      // ── 2단계: 품목정보 없으면 성분정보 API 검색 ──
+      // ── 2단계: 품목정보 없으면 성분명으로 품목정보 재검색 ──
       if (!has1) {
-        const dur2Res = await fetch(`/api/dur-ingredient?ingdtName=${encodeURIComponent(q)}`).catch(() => null);
+        const ingdtName = eItem?.MATERIAL_NAME
+          ? eItem.MATERIAL_NAME.split(",")[0].trim()
+          : q;
+        const dur2Res = await fetch(`/api/dur-ingredient?ingdtName=${encodeURIComponent(ingdtName)}`).catch(() => null);
         const dur2Data = dur2Res ? await dur2Res.json().catch(() => null) : null;
         const dur2Items = dur2Data?.body?.items;
         if (dur2Items && (!Array.isArray(dur2Items) || dur2Items.length > 0)) {
@@ -603,7 +606,7 @@ function DrugWarningTab() {
         ? typeCodes.map(c => `${c}: ${DUR_TYPE[c]?.name || c}`).join(", ")
         : "해당 없음";
 
-      const STEP_LABEL = { 1:"DUR 품목정보", 2:"DUR 성분정보", 3:"Claude 보완" };
+      const STEP_LABEL = { 1:"DUR 품목정보", 2:"DUR 품목정보(성분명)", 3:"Claude 보완" };
       const durSection = durItems
         ? `[${STEP_LABEL[durStep]}]\n기준명: ${durItemName}\n주의사항: ${durDesc}`
         : `[DUR]\n품목·성분 정보 없음 — Claude 전문 지식으로 보완`;
@@ -640,7 +643,7 @@ function DrugWarningTab() {
 
   const STEP_SOURCE = {
     1: { label: "DUR 품목정보", color: "text-blue-600" },
-    2: { label: "DUR 성분정보", color: "text-indigo-600" },
+    2: { label: "DUR 품목정보(성분명)", color: "text-indigo-600" },
     3: { label: "Claude 보완",  color: "text-purple-600" },
   };
 

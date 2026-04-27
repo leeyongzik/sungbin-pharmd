@@ -12,8 +12,8 @@ module.exports = (req, res) => {
   }
 
   const url =
-    `https://apis.data.go.kr/1471000/DURIrdntInfoService03/getDurIrdntInfoList03` +
-    `?serviceKey=${DRUG_API_KEY}&ingdtName=${encodeURIComponent(ingdtName.trim())}&type=json&numOfRows=10&pageNo=1`;
+    `https://apis.data.go.kr/1471000/DURPrdlstInfoService03/getDurPrdlstInfoList03` +
+    `?serviceKey=${DRUG_API_KEY}&itemName=${encodeURIComponent(ingdtName.trim())}&type=json&numOfRows=10&pageNo=1`;
 
   https
     .get(url, (apiRes) => {

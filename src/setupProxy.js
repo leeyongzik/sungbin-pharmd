@@ -38,8 +38,8 @@ module.exports = function (app) {
   app.get("/api/dur-ingredient", (req, res) => {
     const ingdtName = req.query.ingdtName || "";
     proxy(
-      `https://apis.data.go.kr/1471000/DURIrdntInfoService03/getDurIrdntInfoList03` +
-        `?serviceKey=${DRUG_API_KEY}&ingdtName=${encodeURIComponent(ingdtName)}&type=json&numOfRows=10&pageNo=1`,
+      `https://apis.data.go.kr/1471000/DURPrdlstInfoService03/getDurPrdlstInfoList03` +
+        `?serviceKey=${DRUG_API_KEY}&itemName=${encodeURIComponent(ingdtName)}&type=json&numOfRows=10&pageNo=1`,
       res
     );
   });
